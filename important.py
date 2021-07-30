@@ -7,7 +7,7 @@ Created on Wed Jul 28 2021
 Important functions relating to paper "Multi-Sensor Fusion for Decentralized 
 Cooperative Navigation Using Random Finite Sets" in IEEE Aerospace 2022
 
-This differs from utilties in that these functions represent the new functions 
+This differs from utilties in that this script contains the new functions 
 and core contributions of the paper.
 """
 
@@ -16,6 +16,20 @@ import utilities as util
 
 rng = np.random.default_rng(69)  # seeded sim
 # rng = np.random.default_rng()     # unseeded sim
+
+def get_meas(agent_list):
+    meas = []
+    for i in range(0, len(agent_list)):
+        norm1 = agent_list[i][0].position[0].item()
+        norm2 = agent_list[i][0].position[1].item()
+        rg = np.sqrt(norm1**2 + norm2**2)
+        # rg = rg + rng.normal()*rg
+        
+        bear = -np.arctan2(agent_list[i][0].position[1].item(), 
+                           agent_list[i][0].position[0].item())
+        # bear = bear + rng.normal()*bear
+        meas.append(np.array([[bear], [rg]]))
+    return meas
 
 def dead_reckon(agent):
     """ Calculates dead reckoning position estimate.

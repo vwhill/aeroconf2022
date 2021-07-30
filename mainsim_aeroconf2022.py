@@ -31,8 +31,8 @@ simlen = 300 # seconds
 maxiter = int(simlen/control.dt)
 count = 0
 
-for i in range(0, 5000):
-    y = []
+for i in range(0, 10000):
+    meas = []
     for ii in range(0, len(agent_list)):
         a = agent_list[ii][0]
         num = agent_list[ii][1]
@@ -42,17 +42,18 @@ for i in range(0, 5000):
         imp.dead_reckon(a)
         a.save_position()
         a.get_object_positions(agent_list, num, env)
-        a.get_meas()
+        # a.get_meas()
         # y.append(a.meas)  # 2DR&B
-        y.append(a.dr_pos_est)  # linear position
+        # y.append(a.dr_pos_est)  # linear position
         a.check_waypoint()
     
-    y = util.miss_detect(rfs, y)
-    util.gen_clutter(rfs, env, y)
+    meas = imp.get_meas(agent_list)
+    # meas = util.miss_detect(rfs, meas)
+    # util.gen_clutter(rfs, env, meas)
     
     if i % 100 == 0:
-        rfs.predict()  # CPHD
-        rfs.correct(meas=y)
+        rfs.predict(dt=1.0)  # CPHD
+        rfs.correct(meas=meas)
         rfs.prune()
         rfs.merge()
         rfs.cap()

@@ -19,6 +19,7 @@ import gasur.swarm_estimator.tracker as track
 from gasur.utilities.distributions import GaussianMixture
 import gasur.utilities.graphs as graphs
 from scipy.optimize import linear_sum_assignment as lsa
+from scipy.linalg import block_diag
 
 rng = np.random.default_rng(69) # seeded sim
 # rng = np.random.default_rng() # unseeded sim
@@ -31,7 +32,7 @@ class Agent:
         self.cn_pos_est = np.array([[]])
         self.meas = np.array([[]])
         self.desired_state = np.array([[]])
-        self.u = 10.
+        self.u = 5.
         self.dt = 0.01
         self.local_map = None
 
@@ -122,14 +123,14 @@ class Agent:
     def get_meas(self, **kwargs):
         meas = []
         for i in range(0, len(self.obj_pos_true)):
-            norm1 = self.obj_pos_true[i][0].item() - self.position[0].item()
-            norm2 = self.obj_pos_true[i][1].item() - self.position[1].item()
+            norm1 = self.obj_pos_true[i][0].item() - self.dr_pos_est[0].item()
+            norm2 = self.obj_pos_true[i][1].item() - self.dr_pos_est[1].item()
             rg = np.sqrt(norm1**2 + norm2**2)
             rg = rg + rng.normal()*rg
-            bear = math.atan2(self.obj_pos_true[i][1] - self.position[1],
-                              self.obj_pos_true[i][0] - self.position[0])
+            bear = math.atan2(self.obj_pos_true[i][1] - self.dr_pos_est[1],
+                              self.obj_pos_true[i][0] - self.dr_pos_est[0])
             bear = rng.normal()*bear
-            meas.append((rg, bear))
+            meas.append(np.array([[bear], [rg]]))
         self.meas = meas
     
     def get_object_positions(self, agent_list, num, env):
@@ -275,17 +276,17 @@ class DoubleIntegrator:
     def __init__(self):
         self.dt = 0.01
         self.A = np.array([[0.0, 0.0, 1.0, 0.0],
-                           [0.0, 0.0, 0.0, 1.0],
                            [0.0, 0.0, 0.0, 0.0],
+                           [0.0, 0.0, 0.0, 1.0],
                            [0.0, 0.0, 0.0, 0.0]])
 
         self.B = np.array([[0.0, 0.0],
-                           [0.0, 0.0],
                            [1.0, 0.0],
+                           [0.0, 0.0],
                            [0.0, 1.0]])
 
         self.C = np.array([[1.0, 0.0, 0.0, 0.0],
-                           [0.0, 1.0, 0.0, 0.0]])
+                           [0.0, 0.0, 1.0, 0.0]])
 
         [self.F, self.G] = discretize(self.dt, self.A, self.B, self.C, np.zeros((2, 2)))
 
@@ -393,15 +394,15 @@ def plot_results(agent_list, target_list, rfs, env):
     for i in range(0, len(agent_list)):
         a = agent_list[i][0]
         a.plot_position()
-    for i in range(0, len(target_list)):
-        t = target_list[i]
-        t.plot_position()
+    # for i in range(0, len(target_list)):
+    #     t = target_list[i]
+    #     t.plot_position()
 
     env.plot_obstacles()
     plt.title('True Position')
     # plt.savefig('ground_truth.pdf', format='pdf', transparent=True)
     
-    rfs.plot_states([0, 1], meas_inds=[0, 1], state_lbl='Agents', lgnd_loc='lower left', state_color='g')
+    rfs.plot_states([0, 2], state_lbl='Tracked Objects', lgnd_loc='lower left', state_color='g')
     # plt.savefig('rfsplot.pdf', format='pdf',  transparent=True)
     
     plt.figure()
@@ -416,21 +417,23 @@ def plot_results(agent_list, target_list, rfs, env):
     env.plot_obstacles()
     plt.title('DR Position Estimate')
     # plt.savefig('dead_reckoning_solution.pdf', format='pdf', transparent=True)
+    
+    rfs.plot_card_dist()
 
 def gen_clutter(rfs, env, meas):  # need to update for 2DR&B
+    y = []    
     num_clutt = rng.poisson(rfs.clutter_rate)
     for ff in range(num_clutt):
         m = (env.pos_bnds[:, [1]] - env.pos_bnds[:, [0]]) * rng.random((2, 1))
-        meas.append(m)
-    y = []
-    for i in range(0, len(meas)):
-        norm1 = meas[i][0].item() - (env.pos_bnds[0][1].item())/2
-        norm2 = meas[i][1].item() - (env.pos_bnds[1][1].item())/2
+        y.append(m)
+    
+    for i in range(0, len(y)):
+        norm1 = y[i][0].item() - (env.pos_bnds[0][1].item())/2
+        norm2 = y[i][1].item() - (env.pos_bnds[1][1].item())/2
         rg = np.sqrt(norm1**2 + norm2**2)
-        bear = math.atan2(meas[i][1].item() - env.pos_bnds[0][1].item(),
-                          meas[i][0].item() - env.pos_bnds[1][1].item())
-        y.append((rg, bear))
-    return meas
+        bear = math.atan2(y[i][1] - env.pos_bnds[0][1].item(),
+                          y[i][0] - env.pos_bnds[1][1].item())
+        meas.append(np.array([[bear], [rg]]))
 
 def miss_detect(rfs, meas):
     y = []
@@ -440,37 +443,34 @@ def miss_detect(rfs, meas):
     return y
 
 def init_cphd(agent_list, kf, env):
-    birth = []
     gm = []
-    cov = np.zeros((2, 2))
-    cov = 100.0*np.eye(4)
-    cov[2, 2] = 20.0
-    cov[3, 3] = 20.0
+    cov = 10.0**2*np.eye(4)
+    cov[1, 1] = 15.0**2
+    cov[3, 3] = 15.0**2
     for i in range(0, len(agent_list)):
-        vec = np.array([[agent_list[i][0].position[0].item()], 
-                        [agent_list[i][0].position[1].item()], [0.], [0.]])
+        vec = np.array([[agent_list[i][0].position[0].item()], [0.], 
+                        [agent_list[i][0].position[1].item()], [0.]])
         gm.append(GaussianMixture(means=[vec], 
-                                  covariances=[cov.copy()], weights=[1]))
-        birth.append((gm[i], 0.03))
+                                  covariances=[cov.copy()], weights=[1/len(agent_list)]))
 
     rfs = track.CardinalizedPHD()
-    rfs.max_expected_card = len(env.start)
+    rfs.max_expected_card = len(env.start) + 1
     rfs.prob_detection = 0.999
     rfs.prob_survive = 0.99
     rfs.merge_threshold = 4
-    rfs.req_births = len(env.start)
+    rfs.req_births = len(env.start) + 1
     rfs.birth_terms = gm
     rfs.inv_chi2_gate = 32.2361913029694
     rfs.gating_on = False
-    rfs.clutter_rate = 1
+    rfs.clutter_rate = 0.001
     rfs.clutter_den = 1 / np.prod(env.pos_bnds[:, [1]] - env.pos_bnds[:, [0]])
     rfs.filter = kf
-    
+
     return rfs
 
 def init_sim():
     env = Environment()
-    obs_chance = 0.05
+    obs_chance = 0.001
     x_side = 2000
     y_side = 2000
     env.max_x_inds = 26
@@ -482,11 +482,13 @@ def init_sim():
                  (12, 0),
                  (16, 0),
                  (20, 0)]
+    env.start = [env.start[1]]
     
     env.end = [(1, env.max_x_inds-1),
                (8, env.max_x_inds-1),
                (17, env.max_x_inds-1),
                (25, env.max_x_inds-1)]   
+    env.end = [env.end[1]]
     
     env.fix_obstacles()
     
@@ -506,13 +508,6 @@ def init_sim():
         Q[i, i] = proc_noise[i]
     for j in range(0, len(meas_noise)):
         R[j, j] = meas_noise[j]
-    
-    kf = filters.KalmanFilter()
-    kf.set_proc_noise(mat=Q)
-    kf.meas_noise = R
-    kf.set_state_mat(mat=di.F)
-    kf.set_input_mat(mat=di.G)
-    kf.set_meas_mat(mat=di.C)
     
     agent_list = []
     target_list = []
@@ -545,6 +540,51 @@ def init_sim():
         a = agent_list[i][0]
         a.check_waypoint()
     
+    def meas_fnc(state, **kwargs):
+        mag = state[0, 0]**2 + state[2, 0]**2
+        sqrt_mag = np.sqrt(mag)
+        mat = np.vstack((np.hstack((state[2, 0] / mag, 0,
+                                    -state[0, 0] / mag, 0)),
+                        np.hstack((state[0, 0] / sqrt_mag, 0,
+                                   state[2, 0] / sqrt_mag, 0))))
+        return mat
+    
+    def meas_mod(state, **kwargs):
+        z1 = -np.arctan2(state[2, 0], state[0, 0])
+        z2 = np.sqrt(state[0, 0]**2 + state[2, 0]**2)
+        return np.array([[z1], [z2]])
+    
+    kf = filters.ExtendedKalmanFilter()
+    kf.set_meas_mat(fnc=meas_fnc)
+    kf.set_meas_model(meas_mod)
+    kf.meas_noise = np.diag([(0.0001 * np.pi / 180)**2, 0.9**2])
+    sig_w = 10
+    sig_u = np.pi / 180
+    G = np.array([[1.**2 / 2, 0],
+                  [1.,        0],
+                  [0,         1.**2 / 2],
+                  [0,         1.]])
+    Q = block_diag(sig_w**2 * np.eye(2))
+    kf.set_proc_noise(mat=G @ Q @ G.T)
+    
+    # returns x_dot
+    def f0(x, u, **kwargs):
+        return x[1]
+    
+    # returns x_dot_dot
+    def f1(x, u, **kwargs):
+        return 0
+    
+    # returns y_dot
+    def f2(x, u, **kwargs):
+        return x[3]
+    
+    # returns y_dot_dot
+    def f3(x, u, **kwargs):
+        return 0
+    
+    kf.dyn_fncs = [f0, f1, f2, f3]
+
     rfs = init_cphd(agent_list, kf, env)
     
     return agent_list, target_list, env, kf, rfs, control
