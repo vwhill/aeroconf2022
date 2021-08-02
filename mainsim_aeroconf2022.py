@@ -13,7 +13,6 @@ import numpy as np
 import utilities as util
 import important as imp
 from datetime import datetime
-from copy import deepcopy
 
 rng = np.random.default_rng(69)
 # rng = np.random.default_rng()
@@ -24,16 +23,7 @@ print('Start Time = ', start_time)
 
 #%% Initialize
 
-agent_list, target_list, env, kf, rfs, control = util.init_sim()
-ekf = deepcopy(kf)
-
-ekf.cov = rfs.birth_terms[0].covariances[0]
-ekfsol = []
-ekfsol.append((np.array([[agent_list[0][0].position[0].item()],
-                        [agent_list[0][0].position[1].item()]]), 1.0))
-
-ukfsol = ekfsol.copy()
-ukf = imp.init_ukf(rfs, ukfsol)
+agent_list, target_list, env, kf, control = util.init_sim()
 
 #%% Main Loop
 
@@ -41,8 +31,7 @@ simlen = 300 # seconds
 maxiter = int(simlen/control.dt)
 count = 0
 
-for i in range(0, maxiter):
-    meas = []
+for i in range(0, 500):
     for ii in range(0, len(agent_list)):
         a = agent_list[ii][0]
         num = agent_list[ii][1]
@@ -52,33 +41,37 @@ for i in range(0, maxiter):
         imp.dead_reckon(a)
         a.save_position()
         a.get_object_positions(agent_list, num, env)
-        # a.get_meas()
-        # y.append(a.meas)  # 2DR&B
-        # y.append(a.dr_pos_est)  # linear position
         a.check_waypoint()
-    
-    meas = imp.get_meas(agent_list)
-    # util.run_ekf(ekf, ekfsol, meas[0])
-    # imp.run_ukf(ukf, ukfsol, meas[0])
-    
-    meas = util.miss_detect(rfs, meas)
-    util.gen_clutter(rfs, env, meas)
-    
+      
     if i % 100 == 0:
-        rfs.predict(dt=1.0)  # CPHD
-        rfs.correct(meas=meas)
-        rfs.prune()
-        rfs.merge()
-        rfs.cap()
-        rfs.extract_states()
+        msg = []
+        for jj in range(0, len(agent_list)):
+        # for jj in range(0, 0):
+            ag = agent_list[jj][0]
+            ag.get_meas()
+            # ag.meas = util.miss_detect(ag.rfs, ag.meas)
+            # util.gen_clutter(ag.rfs, env, ag.meas)
+            ag.rfs.predict(dt=1.0)  # CPHD
+            ag.rfs.correct(meas=ag.meas)
+            ag.rfs.prune()
+            ag.rfs.merge()
+            ag.rfs.cap()
+            ag.rfs.extract_states()
+            ag.make_broadcast()
+            msg.append(agent_list[jj][0].broadcast)
+        
+        for yy in range(0, len(agent_list)):
+            agent_list[yy][0].receive_broadcasts(msg)
+        
+        # fusion / CN
 
         count = count + 1
         if count % 10 == 0:
-            print(count, 'CPHD runs have been performed')
+            print(count, 'sets of CPHD runs have been performed')
 
 #%% Plots
 
-util.plot_results(agent_list, target_list, rfs, env, ekfsol, ukfsol)
+util.plot_results(agent_list, target_list, env)
 
 print('Start Time = ', start_time)
 now = datetime.now()

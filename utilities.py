@@ -20,6 +20,7 @@ from gasur.utilities.distributions import GaussianMixture
 import gasur.utilities.graphs as graphs
 from scipy.optimize import linear_sum_assignment as lsa
 from scipy.linalg import block_diag
+from copy import deepcopy
 
 rng = np.random.default_rng(69) # seeded sim
 # rng = np.random.default_rng() # unseeded sim
@@ -53,8 +54,12 @@ class Agent:
         self.last_waypoint = ([], 0)
         self.dead = 0
         
-        self.rfs = []
+        self.rfs = track.CardinalizedPHD()
         self.obj_pos_true = []
+        self.broadcast = []
+        self.broadcast_hist = []
+        self.message_rec = []
+        self.message_rec_hist = []
         
     def check_waypoint(self):
         if self.current_waypoint[1] == len(self.waypoints):
@@ -114,7 +119,7 @@ class Agent:
         for i in range(0, len(self.dr_pos_est_history)):
             x.append(self.dr_pos_est_history[i][0])
             y.append(self.dr_pos_est_history[i][1])
-        plt.plot(x, y , label='Dead Reckoning Navigation Solution', linewidth=2)
+        plt.plot(x, y, ',', label='Dead Reckoning Navigation Solution')
         plt.plot(self.dr_pos_est_history[0][0], self.dr_pos_est_history[0][1], 'ro', label='Start')
         plt.plot(self.dr_pos_est_history[-1][0], self.dr_pos_est_history[-1][1], 'rx', label='End')
         plt.xlabel('x-position')
@@ -123,13 +128,11 @@ class Agent:
     def get_meas(self, **kwargs):
         meas = []
         for i in range(0, len(self.obj_pos_true)):
-            norm1 = self.obj_pos_true[i][0].item() - self.dr_pos_est[0].item()
-            norm2 = self.obj_pos_true[i][1].item() - self.dr_pos_est[1].item()
+            norm1 = self.obj_pos_true[i][0].item() - self.position[0].item()
+            norm2 = self.obj_pos_true[i][1].item() - self.position[1].item()
             rg = np.sqrt(norm1**2 + norm2**2)
-            # rg = rg + rng.normal()*rg
-            bear = -math.atan2(self.obj_pos_true[i][1] - self.dr_pos_est[1],
-                               self.obj_pos_true[i][0] - self.dr_pos_est[0])
-            # bear = rng.normal()*bear
+            bear = -math.atan2(self.obj_pos_true[i][1] - self.position[1],
+                               self.obj_pos_true[i][0] - self.position[0])
             meas.append(np.array([[bear], [rg]]))
         self.meas = meas
     
@@ -142,7 +145,88 @@ class Agent:
             obs_pos = np.array([[env.obstacle_locations[j][0].item()], 
                                 [env.obstacle_locations[j][1].item()]])
             self.obj_pos_true.append(obs_pos)
-
+    
+    def init_ekf(self):
+        def meas_fnc(state, **kwargs):
+            mag = state[0, 0]**2 + state[2, 0]**2
+            sqrt_mag = np.sqrt(mag)
+            mat = np.vstack((np.hstack((state[2, 0] / mag, 0,
+                                        -state[0, 0] / mag, 0)),
+                            np.hstack((state[0, 0] / sqrt_mag, 0,
+                                       state[2, 0] / sqrt_mag, 0))))
+            return mat
+        
+        def meas_mod(state, **kwargs):
+            z1 = -np.arctan2(state[2, 0], state[0, 0])
+            z2 = np.sqrt(state[0, 0]**2 + state[2, 0]**2)
+            return np.array([[z1], [z2]])
+        
+        kf = filters.ExtendedKalmanFilter()
+        kf.set_meas_mat(fnc=meas_fnc)
+        kf.set_meas_model(meas_mod)
+        kf.meas_noise = np.diag([(10. * np.pi / 180)**2, 10.0**2])
+        sig_w = 10.
+        G = np.array([[1.**2 / 2, 0],
+                      [1.,        0],
+                      [0,         1.**2 / 2],
+                      [0,         1.]])
+        Q = block_diag(sig_w**2 * np.eye(2))
+        kf.set_proc_noise(mat=G @ Q @ G.T)
+        
+        # returns x_dot
+        def f0(x, u, **kwargs):
+            return x[1]
+        
+        # returns x_dot_dot
+        def f1(x, u, **kwargs):
+            return 0.
+        
+        # returns y_dot
+        def f2(x, u, **kwargs):
+            return x[3]
+        
+        # returns y_dot_dot
+        def f3(x, u, **kwargs):
+            return 0.
+    
+        kf.dyn_fncs = [f0, f1, f2, f3]
+        
+        return kf
+        
+    def init_cphd(self, kf, env):
+        gm = []
+        cov = 10.0**2*np.eye(4)
+        cov[1, 1] = 5.0**2
+        cov[3, 3] = 5.0**2
+        for i in range(0, len(self.obj_pos_true)):
+            vec = np.array([[self.obj_pos_true[i][0].item() - self.position[0].item()], 
+                            [2.], 
+                            [self.obj_pos_true[i][1].item() - self.position[1].item()],
+                            [2.]])
+            gm.append(GaussianMixture(means=[vec], 
+                                      covariances=[cov.copy()], weights=[1/len(self.obj_pos_true)]))
+    
+        self.rfs.save_covs = True
+        self.rfs.max_expected_card = len(self.obj_pos_true) + 1
+        self.rfs.prob_detection = 0.999
+        self.rfs.prob_survive = 0.99
+        self.rfs.merge_threshold = 4
+        self.rfs.req_births = len(self.obj_pos_true) + 1
+        self.rfs.birth_terms = gm
+        self.rfs.inv_chi2_gate = 32.2361913029694
+        self.rfs.gating_on = False
+        self.rfs.clutter_rate = 1.0
+        self.rfs.clutter_den = 1 / np.prod(env.pos_bnds[:, [1]] - env.pos_bnds[:, [0]])
+        self.rfs.filter = kf
+    
+    def make_broadcast(self):
+        self.broadcast = (self.meas, self.rfs._gaussMix)
+        self.broadcast_hist.append(self.broadcast)
+    
+    def receive_broadcasts(self, message_list):
+        self.message_rec = message_list
+        self.message_rec_hist.append(message_list)
+    
 class Target:
     def __init__(self):
         self.position = []
@@ -386,10 +470,12 @@ def swarm_guidance_update(agent_list, target_list, rfs_agent, rfs_target, env):
     
     return agent_list
 
-def plot_results(agent_list, target_list, rfs, env, kfsol, ukfsol):
+def plot_results(agent_list, target_list, env):
     # rfs.plot_card_time_hist(lgnd_loc="lower left", sig_bnd = None) # sig_bnd = None
     # plt.savefig('card_time_hist.pdf', format='pdf',  transparent=True)
-
+    
+    # rfs.plot_card_dist()
+    
     plt.figure()
     for i in range(0, len(agent_list)):
         a = agent_list[i][0]
@@ -397,54 +483,19 @@ def plot_results(agent_list, target_list, rfs, env, kfsol, ukfsol):
     # for i in range(0, len(target_list)):
     #     t = target_list[i]
     #     t.plot_position()
+    
+    for i in range(0, len(agent_list)):
+        a = agent_list[i][0]
+        a.plot_dr_pos_est()
 
     env.plot_obstacles()
-    plt.title('True Position')
+    plt.title('True Position vs DR Estimate')
     # plt.savefig('ground_truth.pdf', format='pdf', transparent=True)
     
-    # plt.figure()
-    # x = []
-    # y = []
-    # for i in range(0, len(kfsol)):
-    #     x.append(kfsol[i][0][0])
-    #     y.append(kfsol[i][0][1])
-    # plt.plot(x, y , label='Agent Trajectory', linewidth=2)
-    # plt.plot(kfsol[0][0][0], kfsol[0][0][1], 'ro', label='Initial Start')
-    # plt.plot(kfsol[-1][0][0], kfsol[-1][0][1], 'rx', label='Initial End')
-    # plt.xlabel('x-position')
-    # plt.ylabel('y-position')
-    # plt.title('EKF Position Estimate')
-    
-    # x = []
-    # y = []
-    # for i in range(0, len(ukfsol)):
-    #     x.append(ukfsol[i][0][0])
-    #     y.append(ukfsol[i][0][1])
-    # plt.plot(x, y , label='Agent Trajectory', linewidth=2)
-    # plt.plot(ukfsol[0][0][0], ukfsol[0][0][1], 'ro', label='Initial Start')
-    # plt.plot(ukfsol[-1][0][0], ukfsol[-1][0][1], 'rx', label='Initial End')
-    # plt.xlabel('x-position')
-    # plt.ylabel('y-position')
-    # plt.title('UKF Position Estimate')
-    
-    rfs.plot_states([0, 2], state_lbl='Object States', lgnd_loc='lower left',
-                    state_color='g', sig_bnd=None)
+    # agent = agent_list[0][0]
+    # agent.rfs.plot_states([0, 2], state_lbl='Object States', 
+    #                       lgnd_loc='lower left', state_color='g', sig_bnd=None)
     # plt.savefig('rfsplot.pdf', format='pdf',  transparent=True)
-    
-    # plt.figure()
-    # for i in range(0, len(agent_list)):
-    #     a = agent_list[i][0]
-    #     a.plot_dr_pos_est()
-        
-    # # for i in range(0, len(target_list)):
-    # #     t = target_list[i]
-    # #     t.plot_position()
-
-    # env.plot_obstacles()
-    # plt.title('DR Position Estimate')
-    # plt.savefig('dead_reckoning_solution.pdf', format='pdf', transparent=True)
-    
-    # rfs.plot_card_dist()
 
 def gen_clutter(rfs, env, meas):  # need to update for 2DR&B
     y = []    
@@ -457,7 +508,7 @@ def gen_clutter(rfs, env, meas):  # need to update for 2DR&B
         norm1 = y[i][0].item() - (env.pos_bnds[0][1].item())/2
         norm2 = y[i][1].item() - (env.pos_bnds[1][1].item())/2
         rg = np.sqrt(norm1**2 + norm2**2)
-        bear = math.atan2(y[i][1] - env.pos_bnds[0][1].item(),
+        bear = -math.atan2(y[i][1] - env.pos_bnds[0][1].item(),
                           y[i][0] - env.pos_bnds[1][1].item())
         meas.append(np.array([[bear], [rg]]))
 
@@ -477,34 +528,6 @@ def run_ekf(kf, kfsol, meas):
     kfsol.append((np.array([[posterior[0][0].item()], [posterior[0][2].item()]]), 
                   posterior[1]))
 
-def init_cphd(agent_list, kf, env):
-    gm = []
-    cov = 10.0**2*np.eye(4)
-    cov[1, 1] = 5.0**2
-    cov[3, 3] = 5.0**2
-    for i in range(0, len(agent_list)):
-        vec = np.array([[agent_list[i][0].position[0].item()], [2.], 
-                        [agent_list[i][0].position[1].item()], [2.]])
-        gm.append(GaussianMixture(means=[vec], 
-                                  covariances=[cov.copy()], weights=[1/len(agent_list)]))
-
-    rfs = track.CardinalizedPHD()
-    # rfs = track.ProbabilityHypothesisDensity()
-    rfs.save_covs = True
-    rfs.max_expected_card = len(env.start) + 1
-    rfs.prob_detection = 0.999
-    rfs.prob_survive = 0.99
-    rfs.merge_threshold = 4
-    rfs.req_births = len(env.start) + 1
-    rfs.birth_terms = gm
-    rfs.inv_chi2_gate = 32.2361913029694
-    rfs.gating_on = False
-    rfs.clutter_rate = 1.0
-    rfs.clutter_den = 1 / np.prod(env.pos_bnds[:, [1]] - env.pos_bnds[:, [0]])
-    rfs.filter = kf
-
-    return rfs
-
 def init_sim():
     env = Environment()
     obs_chance = 0.001
@@ -515,22 +538,19 @@ def init_sim():
     
     env.world_gen(obs_chance, x_side, y_side)
     
-    env.start = [(1, 0),
-                 (12, 0),
-                 (16, 0),
+    env.start = [(5, 0),
+                 (10, 0),
+                 (15, 0),
                  (20, 0)]
-    # env.start = [env.start[3]]
     
-    env.end = [(1, env.max_x_inds-1),
-               (8, env.max_x_inds-1),
-               (17, env.max_x_inds-1),
-               (25, env.max_x_inds-1)]   
-    # env.end = [env.end[0]]
+    env.end = [(1, 25),
+               (9, 25),
+               (18, 25),
+               (25, 25)]   
     
     env.fix_obstacles()
     
     fw  = LateralFixedWing()
-    di = DoubleIntegrator()
     control = LQR(fw.F, fw.G, fw.statedim, fw.indim)
     
     proc_noise = 100.0*np.ones((4, 1))
@@ -577,76 +597,10 @@ def init_sim():
         a = agent_list[i][0]
         a.check_waypoint()
     
-    def meas_fnc(state, **kwargs):
-        mag = state[0, 0]**2 + state[2, 0]**2
-        sqrt_mag = np.sqrt(mag)
-        mat = np.vstack((np.hstack((state[2, 0] / mag, 0,
-                                    -state[0, 0] / mag, 0)),
-                        np.hstack((state[0, 0] / sqrt_mag, 0,
-                                   state[2, 0] / sqrt_mag, 0))))
-        return mat
     
-    def meas_mod(state, **kwargs):
-        z1 = -np.arctan2(state[2, 0], state[0, 0])
-        z2 = np.sqrt(state[0, 0]**2 + state[2, 0]**2)
-        return np.array([[z1], [z2]])
+    for i in range(0, len(agent_list)):
+        agent_list[i][0].get_object_positions(agent_list, agent_list[i][1], env)
+        kf = agent_list[i][0].init_ekf()
+        agent_list[i][0].init_cphd(kf, env)
     
-    # kf = filters.UnscentedKalmanFilter()
-    kf = filters.ExtendedKalmanFilter()
-    kf.set_meas_mat(fnc=meas_fnc)
-    kf.set_meas_model(meas_mod)
-    kf.meas_noise = np.diag([(10. * np.pi / 180)**2, 10.0**2])
-    sig_w = 10.
-    sig_u = np.pi / 180
-    G = np.array([[1.**2 / 2, 0],
-                  [1.,        0],
-                  [0,         1.**2 / 2],
-                  [0,         1.]])
-    Q = block_diag(sig_w**2 * np.eye(2))
-    kf.set_proc_noise(mat=G @ Q @ G.T)
-    
-    # def dyn(x, **kwargs):
-    #     dt = kwargs['dt']
-    #     out = np.array([[x[0].item() + dt*x[1].item()],  # x
-    #                     [x[1].item()],                   # xdot
-    #                     [x[2].item() + dt*x[3].item()],  # y
-    #                     [x[3].item()]])                  # ydotdot
-    #     return out
-    
-    # kf.dyn_fnc = dyn
-    
-    # kf.cov = 10.0**2*np.eye(4)
-    # kf.cov[1, 1] = 5.0**2
-    # kf.cov[3, 3] = 5.0**2
-    # state0 = np.array([[agent_list[0][0].position[0].item()], [2.], 
-    #                     [agent_list[0][0].position[1].item()], [2.]])
-    # alpha = 1.0
-    # kappa = 2.0
-    # kf.init_sigma_points(state0, alpha, kappa)
-    
-        # returns x_dot
-    def f0(x, u, **kwargs):
-        return x[1]
-    
-    
-    # returns x_dot_dot
-    def f1(x, u, **kwargs):
-        return 0.
-    
-    
-    # returns y_dot
-    def f2(x, u, **kwargs):
-        return x[3]
-    
-    
-    # returns y_dot_dot
-    def f3(x, u, **kwargs):
-        return 0.
-    
-    kf.dyn_fncs = [f0, f1, f2, f3]
-    
-    rfs = init_cphd(agent_list, kf, env)
-    
-    return agent_list, target_list, env, kf, rfs, control
-
-
+    return agent_list, target_list, env, kf, control
