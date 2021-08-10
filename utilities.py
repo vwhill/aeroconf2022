@@ -21,6 +21,7 @@ import gasur.utilities.graphs as graphs
 from scipy.optimize import linear_sum_assignment as lsa
 from scipy.linalg import block_diag
 from copy import deepcopy
+from scipy.optimize import fsolve
 
 rng = np.random.default_rng(69) # seeded sim
 # rng = np.random.default_rng() # unseeded sim
@@ -46,8 +47,8 @@ class Agent:
 
         self.state_history = []
         self.position_history = []
-        self.dr_pos_est_history = []
-        self.cn_pos_est_history = []
+        self.dr_pos_est_hist = []
+        self.cn_pos_est_hist = []
         self.path = []
         self.waypoints = []
         self.current_waypoint = ([], 1)
@@ -56,10 +57,13 @@ class Agent:
         
         self.rfs = track.CardinalizedPHD()
         self.obj_pos_true = []
+        self.tracked_obj = []
         self.broadcast = []
         self.broadcast_hist = []
-        self.message_rec = []
-        self.message_rec_hist = []
+        self.messages = []
+        self.message_hist = []
+        self.gm_fused = []
+        self.inv_meas = []
         
     def check_waypoint(self):
         if self.current_waypoint[1] == len(self.waypoints):
@@ -99,7 +103,7 @@ class Agent:
     
     def save_position(self):
         self.position_history.append(self.position)
-        self.dr_pos_est_history.append(self.dr_pos_est)
+        self.dr_pos_est_hist.append(self.dr_pos_est)
         
     def plot_position(self):
         x = []
@@ -116,12 +120,12 @@ class Agent:
     def plot_dr_pos_est(self):
         x = []
         y = []
-        for i in range(0, len(self.dr_pos_est_history)):
-            x.append(self.dr_pos_est_history[i][0])
-            y.append(self.dr_pos_est_history[i][1])
+        for i in range(0, len(self.dr_pos_est_hist)):
+            x.append(self.dr_pos_est_hist[i][0])
+            y.append(self.dr_pos_est_hist[i][1])
         plt.plot(x, y, ',', label='Dead Reckoning Navigation Solution')
-        plt.plot(self.dr_pos_est_history[0][0], self.dr_pos_est_history[0][1], 'ro', label='Start')
-        plt.plot(self.dr_pos_est_history[-1][0], self.dr_pos_est_history[-1][1], 'rx', label='End')
+        plt.plot(self.dr_pos_est_hist[0][0], self.dr_pos_est_hist[0][1], 'ro', label='Start')
+        plt.plot(self.dr_pos_est_hist[-1][0], self.dr_pos_est_hist[-1][1], 'rx', label='End')
         plt.xlabel('x-position')
         plt.ylabel('y-position')
     
@@ -135,6 +139,26 @@ class Agent:
                                self.obj_pos_true[i][0] - self.position[0])
             meas.append(np.array([[bear], [rg]]))
         self.meas = meas
+        self.inverse_meas()
+    
+    def inverse_meas(self):
+        inv_meas = []
+        def measfnc(p, x1, y1, bear, rg):
+            x, y = p
+            return (-math.atan2(y - y1, x - x1) - bear, 
+                    np.sqrt((x - x1)**2 + (y - y1)**2) - rg)
+            
+        x1 = self.dr_pos_est[0].item()
+        y1 = self.dr_pos_est[1].item()
+        for i in range(0, len(self.meas)):
+            bear = self.meas[i][0].item()
+            rg = self.meas[i][1].item()
+            x2, y2 = fsolve(measfnc, (self.obj_pos_true[i][0].item(), 
+                                      self.obj_pos_true[i][1].item()), 
+                            (x1, y1, bear, rg))
+            inv_meas.append(np.array([[x2], [y2]]))
+        
+        self.inv_meas = inv_meas
     
     def get_object_positions(self, agent_list, num, env):
         self.obj_pos_true = []
@@ -224,8 +248,9 @@ class Agent:
         self.broadcast_hist.append(self.broadcast)
     
     def receive_broadcasts(self, message_list):
-        self.message_rec = message_list
-        self.message_rec_hist.append(message_list)
+        # message_list.append(self.broadcast)
+        self.messages = message_list
+        self.message_hist.append(message_list)
     
 class Target:
     def __init__(self):
@@ -384,16 +409,16 @@ class LQR:
         P = la.solve_discrete_are(F, G, Q, R, e=None, s=None, balanced=True)
         K = la.inv(G.T@P@G+R)@(G.T@P@F)
 
-        sysac = sig.StateSpace(F-G@K, G@K, C, D, dt=self.dt)
+        self.sysout = sig.StateSpace(F-G@K, G@K, C, D, dt=self.dt)
 
-        self.F = sysac.A
-        self.G = sysac.B
+        self.F = self.sysout.A
+        self.G = self.sysout.B
 
 def discretize(dt, A, B, C, D):
     sys = sig.StateSpace(A, B, C, D)
-    sys = sys.to_discrete(dt)
-    F = sys.A
-    G = sys.B
+    sysd = sys.to_discrete(dt)
+    F = sysd.A
+    G = sysd.B
     return F, G
 
 def guidance(xa, ya, xt, yt):
@@ -480,9 +505,9 @@ def plot_results(agent_list, target_list, env):
     for i in range(0, len(agent_list)):
         a = agent_list[i][0]
         a.plot_position()
-    # for i in range(0, len(target_list)):
-    #     t = target_list[i]
-    #     t.plot_position()
+    for i in range(0, len(target_list)):
+        t = target_list[i]
+        t.plot_position()
     
     for i in range(0, len(agent_list)):
         a = agent_list[i][0]
@@ -538,16 +563,12 @@ def init_sim():
     
     env.world_gen(obs_chance, x_side, y_side)
     
-    env.start = [(5, 0),
-                 (10, 0),
-                 (15, 0),
-                 (20, 0)]
+    env.start = [(0, 10),
+                 (15, 0)]
     
-    env.end = [(1, 25),
-               (9, 25),
-               (18, 25),
-               (25, 25)]   
-    
+    env.end = [(15, 25),
+               (25, 15)]   
+
     env.fix_obstacles()
     
     fw  = LateralFixedWing()

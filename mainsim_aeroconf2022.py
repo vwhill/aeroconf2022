@@ -5,7 +5,7 @@ Created on Wed Jul 28 2021
 @author: Vincent W. Hill
 Main simulation script for IEEE Aerospace 2022 paper "Multi-Sensor Fusion for
 Decentralized Cooperative Navigation using Random Finite Sets"
-"""
+ag"""
 
 #%% Imports
 
@@ -31,7 +31,7 @@ simlen = 300 # seconds
 maxiter = int(simlen/control.dt)
 count = 0
 
-for i in range(0, 500):
+for i in range(0, 505):
     for ii in range(0, len(agent_list)):
         a = agent_list[ii][0]
         num = agent_list[ii][1]
@@ -42,28 +42,35 @@ for i in range(0, 500):
         a.save_position()
         a.get_object_positions(agent_list, num, env)
         a.check_waypoint()
-      
-    if i % 100 == 0:
+    
+    if i % 101 == 0:
         msg = []
         for jj in range(0, len(agent_list)):
         # for jj in range(0, 0):
-            ag = agent_list[jj][0]
-            ag.get_meas()
+            ag2 = agent_list[jj][0]
+            ag2.get_meas()
             # ag.meas = util.miss_detect(ag.rfs, ag.meas)
             # util.gen_clutter(ag.rfs, env, ag.meas)
-            ag.rfs.predict(dt=1.0)  # CPHD
-            ag.rfs.correct(meas=ag.meas)
-            ag.rfs.prune()
-            ag.rfs.merge()
-            ag.rfs.cap()
-            ag.rfs.extract_states()
-            ag.make_broadcast()
-            msg.append(agent_list[jj][0].broadcast)
+            ag2.rfs.predict(dt=1.0)  # CPHD
+            ag2.rfs.correct(meas=ag2.meas)
+            ag2.rfs.prune()
+            ag2.rfs.merge()
+            ag2.rfs.cap()
+            ag2.rfs.extract_states()
+            ag2.tracked_obj = ag2.rfs.states
+            ag2.make_broadcast()
+            msg.append(ag2.broadcast)
         
-        for yy in range(0, len(agent_list)):
-            agent_list[yy][0].receive_broadcasts(msg)
-        
-        # fusion / CN
+        msg = []
+        for xx in range(0, len(agent_list)):
+            msg.append(agent_list[xx][0].broadcast)
+        # for yy in range(0, len(agent_list)):
+        for yy in range(1, 2):
+            ag3 = agent_list[yy][0]
+            ag3.receive_broadcasts(msg)
+            # ag3.gm_fused = imp.GeneralizedCovarianceIntersection(msg, ag3)
+            # ag3.cn_pos_est = imp.CooperativeNavigation(ag3)
+            # ag3.cn_pos_est_hist.append(ag3.cn_pos_est)
 
         count = count + 1
         if count % 10 == 0:
