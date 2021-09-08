@@ -5,7 +5,7 @@ Created on Wed Jul 28 2021
 @author: Vincent W. Hill
 Main simulation script for IEEE Aerospace 2022 paper "Multi-Sensor Fusion for
 Decentralized Cooperative Navigation using Random Finite Sets"
-ag"""
+"""
 
 #%% Imports
 
@@ -27,11 +27,11 @@ agent_list, target_list, env, kf, control = util.init_sim()
 
 #%% Main Loop
 
-simlen = 300 # seconds
+simlen = 180 # seconds
 maxiter = int(simlen/control.dt)
 count = 0
 
-for i in range(0, 505):
+for i in range(0, maxiter):
     for ii in range(0, len(agent_list)):
         a = agent_list[ii][0]
         num = agent_list[ii][1]
@@ -60,16 +60,20 @@ for i in range(0, 505):
             ag2.tracked_obj = ag2.rfs.states
             ag2.make_broadcast()
             msg.append(ag2.broadcast)
-        
+         
         msg = []
-        for xx in range(0, len(agent_list)):
+        for xx in range(1, len(agent_list)):
             msg.append(agent_list[xx][0].broadcast)
         # for yy in range(0, len(agent_list)):
-        for yy in range(1, 2):
+        msg2 = []
+        for yy in range(0, 1):
             ag3 = agent_list[yy][0]
-            ag3.receive_broadcasts(msg)
-            # ag3.gm_fused = imp.GeneralizedCovarianceIntersection(msg, ag3)
-            # ag3.cn_pos_est = imp.CooperativeNavigation(ag3)
+            msg2.append(imp.DistributedGCI(msg[0:2]))
+            msg2.append(imp.DistributedGCI(msg[2:4]))
+            gm_fuse = imp.DistributedGCI(msg2)
+            msg3 = [gm_fuse, ag3.broadcast]
+            ag3.gm_fused = imp.DistributedGCI(msg3)
+            imp.CooperativeNavigation(ag3)
             # ag3.cn_pos_est_hist.append(ag3.cn_pos_est)
 
         count = count + 1
@@ -84,3 +88,4 @@ print('Start Time = ', start_time)
 now = datetime.now()
 end_time = now.strftime("%H:%M:%S")
 print('End Time = ', end_time)
+ 

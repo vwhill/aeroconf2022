@@ -30,8 +30,7 @@ class Agent:
     def __init__(self):
         self.state = np.array([[]])
         self.position = np.array([[]])
-        self.dr_pos_est = np.array([[]])
-        self.cn_pos_est = np.array([[]])
+        self.pos_est = np.array([[]])
         self.meas = np.array([[]])
         self.desired_state = np.array([[]])
         self.u = 5.
@@ -47,9 +46,7 @@ class Agent:
 
         self.state_history = []
         self.position_history = []
-        self.dr_pos_est_hist = []
-        self.cn_pos_est_hist = []
-        self.path = []
+        self.pos_est_hist = []
         self.waypoints = []
         self.current_waypoint = ([], 1)
         self.last_waypoint = ([], 0)
@@ -65,11 +62,14 @@ class Agent:
         self.gm_fused = []
         self.inv_meas = []
         
+        self.nav = 0 # 0 = DR, 1 = CN
+        self.act_nav = np.array([])
+        
     def check_waypoint(self):
         if self.current_waypoint[1] == len(self.waypoints):
             self.waypoints = list(reversed(self.waypoints))
-        norm1 = self.dr_pos_est[0].item() - self.current_waypoint[0][0].item()
-        norm2 = self.dr_pos_est[1].item() - self.current_waypoint[0][1].item()
+        norm1 = self.pos_est[0].item() - self.current_waypoint[0][0].item()
+        norm2 = self.pos_est[1].item() - self.current_waypoint[0][1].item()
         norm = np.sqrt(norm1**2 + norm2**2)
         if len(self.waypoints) <= self.current_waypoint[1]:
             self.current_waypoint = ((self.waypoints[1]), 1)
@@ -79,8 +79,8 @@ class Agent:
             self.last_waypoint = self.current_waypoint
             self.current_waypoint = (self.waypoints[self.current_waypoint[1]], 
                                      self.current_waypoint[1] + 1)
-            self.desired_state[4] = guidance(self.dr_pos_est[0].item(),
-                                             self.dr_pos_est[1].item(),
+            self.desired_state[4] = guidance(self.pos_est[0].item(),
+                                             self.pos_est[1].item(),
                                              self.current_waypoint[0][0].item(),
                                              self.current_waypoint[0][1].item())
 
@@ -102,8 +102,8 @@ class Agent:
         self.position = np.array([[pos[0]], [pos[1]]], dtype=float)
     
     def save_position(self):
-        self.position_history.append(self.position)
-        self.dr_pos_est_hist.append(self.dr_pos_est)
+        self.position_history.append(self.position.copy())
+        self.pos_est_hist.append(self.pos_est.copy())
         
     def plot_position(self):
         x = []
@@ -117,45 +117,48 @@ class Agent:
         plt.xlabel('x-position')
         plt.ylabel('y-position')
     
-    def plot_dr_pos_est(self):
+    def plot_pos_est(self):
         x = []
         y = []
-        for i in range(0, len(self.dr_pos_est_hist)):
-            x.append(self.dr_pos_est_hist[i][0])
-            y.append(self.dr_pos_est_hist[i][1])
-        plt.plot(x, y, ',', label='Dead Reckoning Navigation Solution')
-        plt.plot(self.dr_pos_est_hist[0][0], self.dr_pos_est_hist[0][1], 'ro', label='Start')
-        plt.plot(self.dr_pos_est_hist[-1][0], self.dr_pos_est_hist[-1][1], 'rx', label='End')
+        for i in range(0, len(self.pos_est_hist)):
+            x.append(self.pos_est_hist[i][0])
+            y.append(self.pos_est_hist[i][1])
+        plt.plot(x, y, ',', label='Cooperative Navigation Solution')
+        plt.plot(self.pos_est_hist[0][0], self.pos_est_hist[0][1], 'ro', label='Start')
+        plt.plot(self.pos_est_hist[-1][0], self.pos_est_hist[-1][1], 'rx', label='End')
         plt.xlabel('x-position')
         plt.ylabel('y-position')
     
     def get_meas(self, **kwargs):
         meas = []
+        self.act_nav = self.pos_est.copy()
         for i in range(0, len(self.obj_pos_true)):
-            norm1 = self.obj_pos_true[i][0].item() - self.position[0].item()
-            norm2 = self.obj_pos_true[i][1].item() - self.position[1].item()
-            rg = np.sqrt(norm1**2 + norm2**2)
-            bear = -math.atan2(self.obj_pos_true[i][1] - self.position[1],
-                               self.obj_pos_true[i][0] - self.position[0])
+            norm0 = self.obj_pos_true[i][0].item() - self.position[0].item() + \
+                    self.act_nav[0].item()
+            norm1 = self.obj_pos_true[i][1].item() - self.position[1].item() + \
+                    self.act_nav[1].item()
+            rg = np.sqrt(norm0**2 + norm1**2)
+            bear = -math.atan2(self.obj_pos_true[i][1] - self.position[1] + \
+                               self.act_nav[1].item(),
+                               self.obj_pos_true[i][0] - self.position[0] + \
+                               self.act_nav[0].item())
             meas.append(np.array([[bear], [rg]]))
         self.meas = meas
         self.inverse_meas()
     
     def inverse_meas(self):
         inv_meas = []
-        def measfnc(p, x1, y1, bear, rg):
+        def measfnc(p, bear, rg):
             x, y = p
-            return (-math.atan2(y - y1, x - x1) - bear, 
-                    np.sqrt((x - x1)**2 + (y - y1)**2) - rg)
-            
-        x1 = self.dr_pos_est[0].item()
-        y1 = self.dr_pos_est[1].item()
+            return (-math.atan2(y, x) - bear, 
+                    np.sqrt(x**2 + y**2) - rg)
+        
         for i in range(0, len(self.meas)):
             bear = self.meas[i][0].item()
             rg = self.meas[i][1].item()
             x2, y2 = fsolve(measfnc, (self.obj_pos_true[i][0].item(), 
                                       self.obj_pos_true[i][1].item()), 
-                            (x1, y1, bear, rg))
+                            (bear, rg))
             inv_meas.append(np.array([[x2], [y2]]))
         
         self.inv_meas = inv_meas
@@ -174,10 +177,10 @@ class Agent:
         def meas_fnc(state, **kwargs):
             mag = state[0, 0]**2 + state[2, 0]**2
             sqrt_mag = np.sqrt(mag)
-            mat = np.vstack((np.hstack((state[2, 0] / mag, 0,
-                                        -state[0, 0] / mag, 0)),
-                            np.hstack((state[0, 0] / sqrt_mag, 0,
-                                       state[2, 0] / sqrt_mag, 0))))
+            mat = np.vstack((np.hstack((state[2, 0] / (mag+1e-3), 0,
+                                        -state[0, 0] / (mag+1e-3), 0)),
+                            np.hstack((state[0, 0] / (sqrt_mag+1e-3), 0,
+                                       state[2, 0] / (sqrt_mag+1e-3), 0))))
             return mat
         
         def meas_mod(state, **kwargs):
@@ -223,9 +226,9 @@ class Agent:
         cov[1, 1] = 5.0**2
         cov[3, 3] = 5.0**2
         for i in range(0, len(self.obj_pos_true)):
-            vec = np.array([[self.obj_pos_true[i][0].item() - self.position[0].item()], 
+            vec = np.array([[self.obj_pos_true[i][0].item()], 
                             [2.], 
-                            [self.obj_pos_true[i][1].item() - self.position[1].item()],
+                            [self.obj_pos_true[i][1].item()],
                             [2.]])
             gm.append(GaussianMixture(means=[vec], 
                                       covariances=[cov.copy()], weights=[1/len(self.obj_pos_true)]))
@@ -244,7 +247,7 @@ class Agent:
         self.rfs.filter = kf
     
     def make_broadcast(self):
-        self.broadcast = (self.meas, self.rfs._gaussMix)
+        self.broadcast = (self.rfs._gaussMix)
         self.broadcast_hist.append(self.broadcast)
     
     def receive_broadcasts(self, message_list):
@@ -511,10 +514,10 @@ def plot_results(agent_list, target_list, env):
     
     for i in range(0, len(agent_list)):
         a = agent_list[i][0]
-        a.plot_dr_pos_est()
+        a.plot_pos_est()
 
     env.plot_obstacles()
-    plt.title('True Position vs DR Estimate')
+    plt.title('True Position vs Navigation Solution')
     # plt.savefig('ground_truth.pdf', format='pdf', transparent=True)
     
     # agent = agent_list[0][0]
@@ -558,16 +561,22 @@ def init_sim():
     obs_chance = 0.001
     x_side = 2000
     y_side = 2000
-    env.max_x_inds = 26
-    env.max_y_inds = 26
+    env.max_x_inds = 31
+    env.max_y_inds = 31
     
     env.world_gen(obs_chance, x_side, y_side)
     
-    env.start = [(0, 10),
-                 (15, 0)]
+    env.start = [(0, 0),
+                 (10, 0),
+                 (17, 0),
+                 (25, 0),
+                 (30, 0)]
     
-    env.end = [(15, 25),
-               (25, 15)]   
+    env.end = [(5, 30),
+               (10, 30),
+               (15, 30),
+               (20, 30),
+               (25, 30)]   
 
     env.fix_obstacles()
     
@@ -595,7 +604,7 @@ def init_sim():
         a.state = np.zeros((fw.statedim, 1))
         a.save_state()
         a.position = env.ind_to_pos(env.start[i][0], env.start[i][1])
-        a.dr_pos_est = a.position.copy()
+        a.pos_est = a.position.copy()
         a.save_position()
         a.desired_state = np.zeros((fw.statedim, 1))
         a.desired_state[4] = np.deg2rad(0.)
