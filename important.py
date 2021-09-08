@@ -77,8 +77,9 @@ def CooperativeNavigation(agent):
             cn_est: cooperative navigation position estimate
         """
     if agent.gm_fused:
-        agent.pos_est = np.array([[agent.gm_fused.means[0][0].item()],
-                                  [agent.gm_fused.means[0][2].item()]])
+        if agent.gm_fused.means:
+            agent.pos_est = np.array([[agent.gm_fused.means[0][0].item()],
+                                      [agent.gm_fused.means[0][2].item()]])
         
 def GeneralizedCovarianceIntersection(msg, inds):
     """ Fuses own and received CPHD solutions (must have same FoV)
@@ -142,20 +143,23 @@ def fuse(omega, weight_list, mean_list, cov_list):
     cov = []
     mean = []
     weight = []
-    k0 = kernel(omega, cov_list[0])
-    k1 = kernel(1 - omega, cov_list[1])
-    cov_temp = la.inv(omega * la.inv(cov_list[0]) + (1 - omega) * la.inv(cov_list[1]))
-    mean_temp = cov_temp @ (omega * la.inv(cov_list[0]) @ mean_list[0] + \
-                            (1 - omega) * la.inv(cov_list[1]) @ mean_list[1])
-    weight_temp = weight_list[0]**omega * weight_list[1]**(1 - omega) * k0 * k1
-    w_cov = cov_list[0] / omega + cov_list[1] / (1 - omega)
-    ms = mean_list[0]-mean_list[1]
-    weight_temp *= st.multivariate_normal.pdf(ms.flatten(),
-                                              mean=np.zeros(4),
-                                              cov=w_cov)
-    weight.append(weight_temp)
-    cov.append(cov_temp.copy())
-    mean.append(mean_temp.copy())
+    for i in range(0, lim):
+        for j in range(0, lim):
+            k0 = kernel(omega, c_1[i])
+            k1 = kernel(1 - omega, c_2[j])
+            cov_temp = la.inv(omega * la.inv(c_1[i]) + (1 - omega) * la.inv(c_2[j]))
+            mean_temp = cov_temp @ (omega * la.inv(c_1[i]) @ m_1[i] + \
+                                    (1 - omega) * la.inv(c_2[j]) @ m_2[j])
+            weight_temp = w_1[i]**omega * w_2[j]**(1 - omega) * k0 * k1
+            w_cov = c_1[i] / omega + c_2[j] / (1 - omega)
+            ms = m_1[i] - m_2[j]
+            weight_temp *= st.multivariate_normal.pdf(ms.flatten(),
+                                                      mean=np.zeros(4),
+                                                      cov=w_cov)
+            if weight_temp > 1e-2:
+                weight.append(weight_temp)
+                cov.append(cov_temp.copy())
+                mean.append(mean_temp.copy())
     return weight, mean, cov
 
 def kernel(w, cov):

@@ -27,7 +27,7 @@ agent_list, target_list, env, kf, control = util.init_sim()
 
 #%% Main Loop
 
-simlen = 180 # seconds
+simlen = 600 # seconds
 maxiter = int(simlen/control.dt)
 count = 0
 
@@ -70,9 +70,7 @@ for i in range(0, maxiter):
             ag3 = agent_list[yy][0]
             msg2.append(imp.DistributedGCI(msg[0:2]))
             msg2.append(imp.DistributedGCI(msg[2:4]))
-            gm_fuse = imp.DistributedGCI(msg2)
-            msg3 = [gm_fuse, ag3.broadcast]
-            ag3.gm_fused = imp.DistributedGCI(msg3)
+            ag3.gm_fused = imp.DistributedGCI(msg2)
             imp.CooperativeNavigation(ag3)
             # ag3.cn_pos_est_hist.append(ag3.cn_pos_est)
 

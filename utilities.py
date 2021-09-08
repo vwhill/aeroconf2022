@@ -559,24 +559,24 @@ def run_ekf(kf, kfsol, meas):
 def init_sim():
     env = Environment()
     obs_chance = 0.001
-    x_side = 2000
-    y_side = 2000
+    x_side = 5000
+    y_side = 5000
     env.max_x_inds = 31
     env.max_y_inds = 31
     
     env.world_gen(obs_chance, x_side, y_side)
     
     env.start = [(0, 0),
-                 (10, 0),
-                 (17, 0),
+                 (15, 0),
+                 (20, 0),
                  (25, 0),
                  (30, 0)]
     
-    env.end = [(5, 30),
-               (10, 30),
-               (15, 30),
-               (20, 30),
-               (25, 30)]   
+    env.end = [(2, 30),
+               (19, 30),
+               (22, 30),
+               (25, 30),
+               (28, 30)]   
 
     env.fix_obstacles()
     
