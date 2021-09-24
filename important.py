@@ -36,45 +36,27 @@ def dead_reckon(agent):
     v = agent.state[0].item()
     psi = agent.state[4].item()
     
-    urand = rnd.uniform(-1*u/4, 1*u/4)
-    vrand = rnd.uniform(-2, 5)
+    # urand = rnd.uniform(-1*u/4, 1*u/4)
+    # vrand = rnd.uniform(-2, 5)
     # psirand = rnd.uniform(psi/4, 3*psi/4)
     
-    pos = util.velprop(xe, ye, u + urand, v + vrand, psi, agent.dt)
+    u += agent.rp_u .sample().item()
+    v += agent.rp_u.sample().item()
+    
+    pos = util.velprop(xe, ye, u, v, psi, agent.dt)
     est = np.array([[pos[0]], [pos[1]]], dtype=float)
     
     agent.pos_est = est.copy()
-
-def identify_broadcast(rec_bc, own_bc):
-    """ Calculates likelihood that a received broadcast was sent by a tracked object.
-
-        Args:
-            rec_bc: list of received broadcast class objects
-            own_bc: own broadcast class object
-
-        Returns:
-            L_id: likelihood that broadcast was sent by tracked object
-        """
-    nagent = len(rec_bc)
-    rec_means = []
-    own_means = []
-    for i in range(0, nagent):
-        rec_means.append(rec_bc[i].means[0].copy())
-        rec_means.append(rec_bc[i].means[1].copy())
-        own_means.append(own_bc.means[i].copy())
-    L_id = 1
-    return L_id
 
 def CooperativeNavigation(agent):
     """ Calculates cooperative navigation position estimate.
 
         Args:
-            dr_est: dead reckoning position estimate
-            rec_bc: all received broadcast class objects
-            own_bc: own broadcast class objects
+            pos_est: current position estimate
+            gm_fused: GaussianMixture object returned from GCI functions
 
         Returns:
-            cn_est: cooperative navigation position estimate
+            pos_est: cooperative navigation position estimate
         """
     if agent.gm_fused:
         if agent.gm_fused.means:
@@ -83,14 +65,15 @@ def CooperativeNavigation(agent):
         
 def GeneralizedCovarianceIntersection(msg, inds):
     """ Fuses own and received CPHD solutions (must have same FoV)
-
         Args:
             msg: list of all messages containing 2DR&B measurements and
             Gaussian Mixture class
             
+            inds: list of tuples describing indicies to be fused.
+            (x, (i, j)) = fuse the active agent's xth Gaussian with the ith 
+                          agent's jth Gaussian
         Returns:
             gm_fused: fused Gaussian Mixture class
-            
         The implementation is based on
         @ARTICLE{6472731,
           author={Battistelli, Giorgio and Chisci, Luigi and Fantacci, Claudio and 
@@ -132,6 +115,13 @@ def GeneralizedCovarianceIntersection(msg, inds):
 def fuse(omega, weight_list, mean_list, cov_list):
     """
     Fuse two Gaussian mixture components
+    Args: 
+        omega: metropolis weight equal to 1/num_agent
+        weight_list: weights to be fused
+        mean_list: means to be fused
+        cov_list: covariances to be fused
+          
+    Returns: fused weight, mean, cov
     """
     lim = int(len(weight_list)/2)
     w_1 = weight_list[0:lim]
@@ -156,7 +146,7 @@ def fuse(omega, weight_list, mean_list, cov_list):
             weight_temp *= st.multivariate_normal.pdf(ms.flatten(),
                                                       mean=np.zeros(4),
                                                       cov=w_cov)
-            if weight_temp > 1e-2:
+            if weight_temp > 1e-1:
                 weight.append(weight_temp)
                 cov.append(cov_temp.copy())
                 mean.append(mean_temp.copy())
@@ -170,7 +160,10 @@ def kernel(w, cov):
 
 def DistributedGCI(msg):
     """
-    Fuses CPHD solutions with different FoVs
+    Fuses CPHD solutions with different FoVs.
+    Args: msg - list of GaussianMixture objects
+    Returns: gm_fused - fused GaussianMixture object
+    
     The implementation is based on
     @article{LI2021108210,
     title = {Distributed multi-view multi-target tracking based on CPHD filtering},
@@ -180,12 +173,11 @@ def DistributedGCI(msg):
     year = {2021},
     issn = {0165-1684},
     doi = {https://doi.org/10.1016/j.sigpro.2021.108210},
-    author = {Guchong Li and Giorgio Battistelli and Luigi Chisci and Wei Yi 
+    author = {Guchong Li, Giorgio Battistelli, Luigi Chisci, Wei Yi, 
               and Lingjiang Kong},
     }
     """
-
-    clus = cluster(msg, 1e2/2)
+    clus = cluster(msg, 1e1)
     do_gci = []
     for i in range(0, len(clus)):
         if clus[i]:
@@ -197,11 +189,24 @@ def DistributedGCI(msg):
     return gm_fused
     
 def mahalanobis(means, covs):
+    """
+    Calculates Mahalanobis distance between two Gaussians
+    """
     temp = (means[0]-means[1]).T @ la.inv(covs[0] + covs[1]) @ (means[0]-means[1])
     dis = temp.item()
     return dis
 
 def cluster(msg, rho):
+    """
+    Clusters GaussianMixture components by figuring out which components represent
+    the same object from different agents
+    Args:
+        msg - list of GaussianMixture objects
+        rho - Mahalanobis distance threshold
+    Returns:
+        clus - list of tuples describing indicies to be fused.
+            (i, j) =  ith agent's jth Gaussian
+    """
     nagent = len(msg) # should be 2
     ngauss = len(msg[0].weights)
     idx = []
@@ -225,10 +230,10 @@ def cluster(msg, rho):
         for k in range(0, len(idx2)):
             j = idx2[k][0]
             q = idx2[k][1]
-            means = [msg[i].means[p]]
-            covs = [msg[i].covariances[p]]
-            means.append(msg[j].means[q])
-            covs.append(msg[j].covariances[q])
+            means = [msg[i].means[p].copy()]
+            covs = [msg[i].covariances[p].copy()]
+            means.append(msg[j].means[q].copy())
+            covs.append(msg[j].covariances[q].copy())
             if mahalanobis(means, covs) < rho:
                 clus[num].append((j,q))
     return clus

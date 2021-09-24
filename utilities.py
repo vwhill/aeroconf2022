@@ -22,9 +22,10 @@ from scipy.optimize import linear_sum_assignment as lsa
 from scipy.linalg import block_diag
 from copy import deepcopy
 from scipy.optimize import fsolve
+from rl.random import OrnsteinUhlenbeckProcess
 
-rng = np.random.default_rng(69) # seeded sim
-# rng = np.random.default_rng() # unseeded sim
+# rng = np.random.default_rng(69) # seeded sim
+rng = np.random.default_rng() # unseeded sim
 
 class Agent:
     def __init__(self):
@@ -33,9 +34,9 @@ class Agent:
         self.pos_est = np.array([[]])
         self.meas = np.array([[]])
         self.desired_state = np.array([[]])
-        self.u = 5.
+        self.u = 10.
         self.dt = 0.01
-        self.local_map = None
+        self.done = 0
 
         self.state_mat = np.array([[]])
         self.input_mat = np.array([[]])
@@ -62,12 +63,18 @@ class Agent:
         self.gm_fused = []
         self.inv_meas = []
         
-        self.nav = 0 # 0 = DR, 1 = CN
-        self.act_nav = np.array([])
+        self.rp_u = OrnsteinUhlenbeckProcess(theta=0.01, mu=0., sigma=0.4, size=1)
+        self.rp_v = OrnsteinUhlenbeckProcess(theta=1, mu=0., sigma=10., size=1)
         
     def check_waypoint(self):
+        if self.done == 1:
+            self.desired_state[4] = CoordinatedTurn(self)
+            return
         if self.current_waypoint[1] == len(self.waypoints):
-            self.waypoints = list(reversed(self.waypoints))
+            # self.waypoints = list(reversed(self.waypoints))
+            self.done = 1
+            self.desired_state[4] = CoordinatedTurn(self)
+            return
         norm1 = self.pos_est[0].item() - self.current_waypoint[0][0].item()
         norm2 = self.pos_est[1].item() - self.current_waypoint[0][1].item()
         norm = np.sqrt(norm1**2 + norm2**2)
@@ -75,7 +82,7 @@ class Agent:
             self.current_waypoint = ((self.waypoints[1]), 1)
             self.last_waypoint = ((self.waypoints[0]), 0)
             return
-        if norm < 30:
+        if norm < 50:
             self.last_waypoint = self.current_waypoint
             self.current_waypoint = (self.waypoints[self.current_waypoint[1]], 
                                      self.current_waypoint[1] + 1)
@@ -105,43 +112,47 @@ class Agent:
         self.position_history.append(self.position.copy())
         self.pos_est_hist.append(self.pos_est.copy())
         
-    def plot_position(self):
+    def plot_position(self, **kwargs):
+        ostr = kwargs["color"] + "o"
+        xstr = kwargs["color"] + "x"
         x = []
         y = []
         for i in range(0, len(self.position_history)):
             x.append(self.position_history[i][0])
             y.append(self.position_history[i][1])
         plt.plot(x, y , label='Agent trajectory', linewidth=2)
-        plt.plot(self.position_history[0][0], self.position_history[0][1], 'ro', label='Initial Start')
-        plt.plot(self.position_history[-1][0], self.position_history[-1][1], 'rx', label='Initial End')
+        plt.plot(self.position_history[0][0], self.position_history[0][1], ostr, label='Initial Start')
+        plt.plot(self.position_history[-1][0], self.position_history[-1][1], xstr, label='Initial End')
         plt.xlabel('x-position')
         plt.ylabel('y-position')
     
-    def plot_pos_est(self):
+    def plot_pos_est(self, **kwargs):
+        ostr = kwargs["color"] + "o"
+        xstr = kwargs["color"] + "x"
         x = []
         y = []
         for i in range(0, len(self.pos_est_hist)):
             x.append(self.pos_est_hist[i][0])
             y.append(self.pos_est_hist[i][1])
-        plt.plot(x, y, ',', label='Cooperative Navigation Solution')
-        plt.plot(self.pos_est_hist[0][0], self.pos_est_hist[0][1], 'ro', label='Start')
-        plt.plot(self.pos_est_hist[-1][0], self.pos_est_hist[-1][1], 'rx', label='End')
+        # plt.plot(x, y, ',', label='Cooperative Navigation Solution')
+        plt.plot(x, y, label='Cooperative Navigation Solution', linewidth=2)
+        plt.plot(self.pos_est_hist[0][0], self.pos_est_hist[0][1], ostr, label='Start')
+        plt.plot(self.pos_est_hist[-1][0], self.pos_est_hist[-1][1], xstr, label='End')
         plt.xlabel('x-position')
         plt.ylabel('y-position')
     
     def get_meas(self, **kwargs):
         meas = []
-        self.act_nav = self.pos_est.copy()
         for i in range(0, len(self.obj_pos_true)):
             norm0 = self.obj_pos_true[i][0].item() - self.position[0].item() + \
-                    self.act_nav[0].item()
+                    self.position[0].item()
             norm1 = self.obj_pos_true[i][1].item() - self.position[1].item() + \
-                    self.act_nav[1].item()
+                    self.position[1].item()
             rg = np.sqrt(norm0**2 + norm1**2)
             bear = -math.atan2(self.obj_pos_true[i][1] - self.position[1] + \
-                               self.act_nav[1].item(),
+                               self.position[1].item(),
                                self.obj_pos_true[i][0] - self.position[0] + \
-                               self.act_nav[0].item())
+                               self.position[0].item())
             meas.append(np.array([[bear], [rg]]))
         self.meas = meas
         self.inverse_meas()
@@ -168,10 +179,10 @@ class Agent:
         for i in range(0, len(agent_list)):
             if i != num:
                 self.obj_pos_true.append(agent_list[i][0].position)
-        for j in range(0, len(env.obstacle_locations)):
-            obs_pos = np.array([[env.obstacle_locations[j][0].item()], 
-                                [env.obstacle_locations[j][1].item()]])
-            self.obj_pos_true.append(obs_pos)
+        # for j in range(0, len(env.obstacle_locations)):
+        #     obs_pos = np.array([[env.obstacle_locations[j][0].item()], 
+        #                         [env.obstacle_locations[j][1].item()]])
+        #     self.obj_pos_true.append(obs_pos)
     
     def init_ekf(self):
         def meas_fnc(state, **kwargs):
@@ -259,8 +270,9 @@ class Target:
     def __init__(self):
         self.position = []
     
-    def plot_position(self):
-        plt.plot(self.position[0], self.position[1], 'ro', label='Target Position')
+    def plot_position(self, **kwargs):
+        ostr = kwargs["color"] + "o"
+        plt.plot(self.position[0], self.position[1], ostr, label='Target Position')
         plt.xlabel('x-position')
         plt.ylabel('y-position')
 
@@ -286,24 +298,26 @@ class Environment:
         self.x_side = x_side
         self.y_side = y_side
           
-        self.map = rng.random((self.max_x_inds, self.max_y_inds))  # random obstacle locations
-        for ii in range(0, np.size(self.map, axis=0)):
-            for jj in range(0, np.size(self.map, axis=1)):
-                if self.map[ii][jj] < obstacle_chance:
-                    self.map[ii][jj] = 1
-                    self.obstacle_list.append((ii, jj))
-                    self.obstacle_locations.append(self.ind_to_pos(ii, jj))
-                else:
-                    self.map[ii][jj] = 0
-        
-        # self.map = np.zeros((self.max_x_inds, self.max_y_inds))  # set obstacle locations
-        # self.map[0:int(1*self.max_y_inds/2), int(self.max_y_inds/3)] = 1
-        # self.map[int(self.max_y_inds/5):int(4*self.max_y_inds/5), int(self.max_y_inds/3)] = 1
+        # self.map = rng.random((self.max_x_inds, self.max_y_inds))  # random obstacle locations
         # for ii in range(0, np.size(self.map, axis=0)):
         #     for jj in range(0, np.size(self.map, axis=1)):
-        #         if self.map[ii][jj] == 1:
+        #         if self.map[ii][jj] < obstacle_chance:
+        #             self.map[ii][jj] = 1
         #             self.obstacle_list.append((ii, jj))
         #             self.obstacle_locations.append(self.ind_to_pos(ii, jj))
+        #         else:
+        #             self.map[ii][jj] = 0
+        
+        self.map = np.zeros((self.max_x_inds, self.max_y_inds))  # set obstacle locations
+        # self.map[10, 10:20] = 1
+        # self.map[0:14, 3] = 1
+        # self.map[20:31, 28] = 1
+        # self.map[0:13, 27] = 1
+        for ii in range(0, np.size(self.map, axis=0)):
+            for jj in range(0, np.size(self.map, axis=1)):
+                if self.map[ii][jj] == 1:
+                    self.obstacle_list.append((ii, jj))
+                    self.obstacle_locations.append(self.ind_to_pos(ii, jj))
         
         self.fix_obstacles()
 
@@ -316,7 +330,7 @@ class Environment:
     def plot_obstacles(self):
         x_val = [x[0] for x in self.obstacle_locations]
         y_val = [x[1] for x in self.obstacle_locations]
-        plt.scatter(x_val, y_val, s=30, label='Obstacles', color='black')
+        plt.scatter(x_val, y_val, s=30, marker="s", label='Obstacles', color='black')
 
     def ind_to_pos(self, row_ind, col_ind):
         x_pos = col_ind/self.max_x_inds * self.x_side
@@ -424,6 +438,12 @@ def discretize(dt, A, B, C, D):
     G = sysd.B
     return F, G
 
+def CoordinatedTurn(agent):
+    phi = np.arctan(agent.u**2/(9.81*75))
+    dot = agent.dt * (9.81/agent.u)*np.tan(phi)
+    psi = agent.desired_state[4].item() + dot
+    return psi
+
 def guidance(xa, ya, xt, yt):
     Hdes = float(-math.atan2((yt-ya), (xt-xa)))
     if np.abs(yt-ya) < 10:
@@ -507,14 +527,15 @@ def plot_results(agent_list, target_list, env):
     plt.figure()
     for i in range(0, len(agent_list)):
         a = agent_list[i][0]
-        a.plot_position()
+        a.plot_position(color="g")
+        
     for i in range(0, len(target_list)):
         t = target_list[i]
-        t.plot_position()
-    
+        t.plot_position(color="b")
+        
     for i in range(0, len(agent_list)):
         a = agent_list[i][0]
-        a.plot_pos_est()
+        a.plot_pos_est(color="r")
 
     env.plot_obstacles()
     plt.title('True Position vs Navigation Solution')
@@ -558,7 +579,7 @@ def run_ekf(kf, kfsol, meas):
 
 def init_sim():
     env = Environment()
-    obs_chance = 0.001
+    obs_chance = 0.2
     x_side = 5000
     y_side = 5000
     env.max_x_inds = 31
@@ -566,17 +587,23 @@ def init_sim():
     
     env.world_gen(obs_chance, x_side, y_side)
     
-    env.start = [(0, 0),
-                 (15, 0),
-                 (20, 0),
-                 (25, 0),
-                 (30, 0)]
+    env.start = [(1, 1),
+                 (1, 15),
+                 (1, 30),
+                 (30, 1),
+                 (30, 30)]
     
-    env.end = [(2, 30),
-               (19, 30),
-               (22, 30),
-               (25, 30),
-               (28, 30)]   
+    randend = 0
+    if randend == 0:
+        env.end = [(10, 5),
+                   (10, 25),
+                   (25, 5),
+                   (25, 25),
+                   (15, 15)]
+    else:
+        env.end = []
+        for i in range(0, 5):
+            env.end.append((int(rng.uniform(1, 30)), int(rng.uniform(1, 30))))
 
     env.fix_obstacles()
     
@@ -584,7 +611,7 @@ def init_sim():
     control = LQR(fw.F, fw.G, fw.statedim, fw.indim)
     
     proc_noise = 100.0*np.ones((4, 1))
-    proc_noise[2, 0] = 20.0
+    proc_noise[1, 0] = 20.0
     proc_noise[3, 0] = 20.0
     meas_noise = 10.0*np.ones((2, 1))
     
@@ -626,7 +653,6 @@ def init_sim():
     for i in range(0, len(agent_list)):
         a = agent_list[i][0]
         a.check_waypoint()
-    
     
     for i in range(0, len(agent_list)):
         agent_list[i][0].get_object_positions(agent_list, agent_list[i][1], env)
