@@ -120,7 +120,7 @@ class Agent:
         for i in range(0, len(self.position_history)):
             x.append(self.position_history[i][0])
             y.append(self.position_history[i][1])
-        plt.plot(x, y , label='Agent trajectory', linewidth=2)
+        plt.plot(x, y, 'b-', label='Agent trajectory', linewidth=2)
         plt.plot(self.position_history[0][0], self.position_history[0][1], ostr, label='Initial Start')
         plt.plot(self.position_history[-1][0], self.position_history[-1][1], xstr, label='Initial End')
         plt.xlabel('x-position')
@@ -135,7 +135,7 @@ class Agent:
             x.append(self.pos_est_hist[i][0])
             y.append(self.pos_est_hist[i][1])
         # plt.plot(x, y, ',', label='Cooperative Navigation Solution')
-        plt.plot(x, y, label='Cooperative Navigation Solution', linewidth=2)
+        plt.plot(x, y, 'r--', label='Cooperative Navigation Solution', linewidth=2)
         plt.plot(self.pos_est_hist[0][0], self.pos_est_hist[0][1], ostr, label='Start')
         plt.plot(self.pos_est_hist[-1][0], self.pos_est_hist[-1][1], xstr, label='End')
         plt.xlabel('x-position')
@@ -170,6 +170,8 @@ class Agent:
             x2, y2 = fsolve(measfnc, (self.obj_pos_true[i][0].item(), 
                                       self.obj_pos_true[i][1].item()), 
                             (bear, rg))
+            # x2, y2 = fsolve(measfnc, (self.rfs.states[i][0].item(), 
+            #               self.rfs.states[i][2].item()), (bear, rg))
             inv_meas.append(np.array([[x2], [y2]]))
         
         self.inv_meas = inv_meas
@@ -253,7 +255,7 @@ class Agent:
         self.rfs.birth_terms = gm
         self.rfs.inv_chi2_gate = 32.2361913029694
         self.rfs.gating_on = False
-        self.rfs.clutter_rate = 1.0
+        self.rfs.clutter_rate = 3.0
         self.rfs.clutter_den = 1 / np.prod(env.pos_bnds[:, [1]] - env.pos_bnds[:, [0]])
         self.rfs.filter = kf
     
@@ -271,7 +273,7 @@ class Target:
         self.position = []
     
     def plot_position(self, **kwargs):
-        ostr = kwargs["color"] + "o"
+        ostr = kwargs["color"] + "D"
         plt.plot(self.position[0], self.position[1], ostr, label='Target Position')
         plt.xlabel('x-position')
         plt.ylabel('y-position')
@@ -527,11 +529,11 @@ def plot_results(agent_list, target_list, env):
     plt.figure()
     for i in range(0, len(agent_list)):
         a = agent_list[i][0]
-        a.plot_position(color="g")
+        a.plot_position(color="b")
         
     for i in range(0, len(target_list)):
         t = target_list[i]
-        t.plot_position(color="b")
+        t.plot_position(color="g")
         
     for i in range(0, len(agent_list)):
         a = agent_list[i][0]
@@ -539,6 +541,7 @@ def plot_results(agent_list, target_list, env):
 
     env.plot_obstacles()
     plt.title('True Position vs Navigation Solution')
+    plt.grid()
     # plt.savefig('ground_truth.pdf', format='pdf', transparent=True)
     
     # agent = agent_list[0][0]
@@ -596,10 +599,15 @@ def init_sim():
     randend = 0
     if randend == 0:
         env.end = [(10, 5),
-                   (10, 25),
-                   (25, 5),
-                   (25, 25),
-                   (15, 15)]
+                    (10, 25),
+                    (25, 5),
+                    (25, 25),
+                    (15, 15)]
+        # env.end = [(15, 15),
+        #             (15, 15),
+        #             (15, 15),
+        #             (15, 15),
+        #             (15, 15)]
     else:
         env.end = []
         for i in range(0, 5):

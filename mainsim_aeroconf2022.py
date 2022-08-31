@@ -54,11 +54,10 @@ for i in range(0, maxiter):
         
         msg = []
         for jj in range(0, len(agent_list)):
-        # for jj in range(0, 0):
             ag2 = agent_list[jj][0]
             ag2.get_meas()
             # ag2.meas = util.miss_detect(ag2.rfs, ag2.meas)
-            # util.gen_clutter(ag2.rfs, env, ag2.meas)
+            util.gen_clutter(ag2.rfs, env, ag2.meas)
             ag2.rfs.predict(dt=1.0)  # CPHD
             ag2.rfs.correct(meas=ag2.meas)
             ag2.rfs.prune()
@@ -92,6 +91,9 @@ for i in range(0, maxiter):
 #%% Plots
 
 util.plot_results(agent_list, target_list, env)
+
+# agent_list[0][0].rfs.plot_states([0, 1], state_lbl='Agents',
+#                                   lgnd_loc='lower left', state_color='g')
 
 print('Start Time = ', start_time)
 now = datetime.now()
